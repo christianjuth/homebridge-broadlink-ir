@@ -10,6 +10,79 @@ const sleep = async (time: number) => new Promise((resolve) => {
   setTimeout(() => resolve(true), time)
 })
 
+type HSL = [number, number, number];
+
+// function calculateDistance(hsl1: HSL, hsl2: HSL): number {
+//   let hDif = Math.min(Math.abs(hsl1[0] - hsl2[0]), 360 - Math.abs(hsl1[0] - hsl2[0]));
+//   let sDif = hsl1[1] - hsl2[1];
+//   let lDif = hsl1[2] - hsl2[2];
+
+//   // Scale the hue difference by the average saturation of the two colors
+//   let saturationScale = (hsl1[1] + hsl2[1]) / 2 / 100;
+//   hDif *= saturationScale;
+
+//   // Scale the hue difference by the average lightness of the two colors
+//   let lightnessScale = (hsl1[2] + hsl2[2]) / 2 / 100;
+//   hDif *= lightnessScale;
+
+//   return Math.sqrt(hDif * hDif + sDif * sDif + lDif * lDif);
+// }
+
+// function calculateDistance(hsl1: HSL, hsl2: HSL): number {
+//     let hDif = Math.min(Math.abs(hsl1[0] - hsl2[0]), 360 - Math.abs(hsl1[0] - hsl2[0]));
+//     let sDif = hsl1[1] - hsl2[1];
+//     let lDif = hsl1[2] - hsl2[2];
+
+//     // Scale the hue difference by the average saturation and lightness of the two colors
+//     let saturationScale = (hsl1[1] + hsl2[1]) / 2 / 100;
+//     let lightnessScale = (hsl1[2] + hsl2[2]) / 2 / 100;
+//     hDif *= (saturationScale * lightnessScale * 2); // Increase hue weight 
+
+//     // Decrease weight to the saturation difference
+//     let saturationWeight = 1.5;
+//     sDif *= saturationWeight;
+
+//     return Math.sqrt(hDif * hDif + sDif * sDif + lDif * lDif);
+// }
+
+function calculateDistance(hsl1: HSL, hsl2: HSL): number {
+    let hDif = Math.min(Math.abs(hsl1[0] - hsl2[0]), 360 - Math.abs(hsl1[0] - hsl2[0]));
+    let sDif = hsl1[1] - hsl2[1];
+    let lDif = hsl1[2] - hsl2[2];
+
+    // Scale the hue difference by the average saturation and lightness of the two colors
+    let saturationScale = (hsl1[1] + hsl2[1]) / 2 / 100;
+    let lightnessScale = (hsl1[2] + hsl2[2]) / 2 / 100;
+    hDif *= (saturationScale * lightnessScale * 2); // Increase hue weight 
+
+    // Decrease weight to the saturation difference a little bit more
+    let saturationWeight = 1.2;
+    sDif *= saturationWeight;
+
+    return Math.sqrt(hDif * hDif + sDif * sDif + lDif * lDif);
+}
+
+
+function findClosestColor(colors: HSL[], target: HSL): HSL | null {
+  if (colors.length === 0) {
+    return null; // return null or throw an error, depending on your needs
+  }
+
+  let closestColor = colors[0];
+  let closestDistance = calculateDistance(closestColor, target);
+
+  for(let i = 1; i < colors.length; i++) {
+    let distance = calculateDistance(colors[i], target);
+    if(distance < closestDistance) {
+      closestDistance = distance;
+      closestColor = colors[i];
+    }
+  }
+
+  return closestColor;
+}
+
+
 function sendIRCode(host: string, irCode: string) {
   const python = spawn('python3', [path.join(__dirname, 'send_ir_code.py'), host, irCode]);
   python.stdout.on('data', function (data) {
@@ -29,6 +102,8 @@ function sendIRCode(host: string, irCode: string) {
 export class ExamplePlatformAccessory {
   private service: Service;
   isOn = false
+  _hue = 0
+  _saturation = 0
 
   constructor(
     private readonly platform: ExampleHomebridgePlatform,
@@ -43,7 +118,15 @@ export class ExamplePlatformAccessory {
 
     // get the LightBulb service if it exists, otherwise create a new LightBulb service
     // you can create multiple services for each accessory
-    this.service = this.accessory.getService(this.platform.Service.Switch) || this.accessory.addService(this.platform.Service.Switch);
+    switch (this.accessory.context.device.type) {
+      case "light": {
+        this.service = this.accessory.getService(this.platform.Service.Lightbulb) || this.accessory.addService(this.platform.Service.Lightbulb);
+        break;
+      }
+      default: {
+        this.service = this.accessory.getService(this.platform.Service.Switch) || this.accessory.addService(this.platform.Service.Switch);
+      }
+    }
 
     // set the service name, this is what is displayed as the default name on the Home app
     // in this example we are using the name we stored in the `accessory.context` in the `discoverDevices` method.
@@ -56,6 +139,34 @@ export class ExamplePlatformAccessory {
     this.service.getCharacteristic(this.platform.Characteristic.On)
       .onSet(this.setOn.bind(this))                // SET - bind to the `setOn` method below
       .onGet(this.getOn.bind(this));               // GET - bind to the `getOn` method below
+
+    if (this.accessory.context.device.type === 'light') {
+      this.service.getCharacteristic(this.platform.Characteristic.Hue)
+        .onSet(this.setHue.bind(this))
+        .onGet(this.getHue.bind(this))
+      
+      this.service.getCharacteristic(this.platform.Characteristic.Saturation)
+        .onSet(this.setSaturation.bind(this))
+        .onGet(this.getSaturation.bind(this))
+    }
+
+    this.updateColor = this.updateColor.bind(this)
+  }
+
+  /**
+   * Dispatch a list of IR commands to devices
+   */
+  async dispatchCommands(cmds: { data: string, repeat?: number }[]) {
+    const device = this.accessory.context.device
+
+    for (const cmd of cmds) {
+      for (let i = 0; i < (cmd.repeat ?? 1); i++) {
+        for (const host of this.platform.resolveHostsToIps(device.hosts)) {
+          sendIRCode(host, cmd.data)
+        }
+        await sleep(500)
+      }
+    }
   }
 
   /**
@@ -69,13 +180,7 @@ export class ExamplePlatformAccessory {
     const device = this.accessory.context.device
 
     const commands = isOn ? device.on : device.off
-
-    for (const cmd of commands) {
-      for (let i = 0; i < cmd.repeat; i++) {
-        sendIRCode(this.platform.host, cmd.data)
-        await sleep(500)
-      }
-    }
+    this.dispatchCommands(commands)
 
     this.isOn = isOn
 
@@ -107,18 +212,46 @@ export class ExamplePlatformAccessory {
     return isOn;
   }
 
-  /**
-   * Handle "SET" requests from HomeKit
-   * These are sent when the user changes the state of an accessory, for example, changing the Brightness
-   */
-  // async setBrightness(value: CharacteristicValue) {
-  //   // implement your own code to set the brightness
-  //   this.exampleStates.Brightness = value as number;
+  _prevColorCmd: string | null = null
+  updateColor() {
+    const hsl: HSL = [this._hue, this._saturation, 100] 
 
-  //   this.platform.log.debug('Set Characteristic Brightness -> ', value);
-  // }
-  
+    const device = this.accessory.context.device
+
+    const colors = new Map<HSL, string>()
+
+    for (const color in device.colors) {
+      const [h,s,l] = color.split(",")
+      colors.set([parseInt(h), parseInt(s), parseInt(l)], device.colors[color])
+    }
+
+    const match = findClosestColor(Array.from(colors.keys()), hsl)
+
+    if (match) {
+      const cmd = device.colors[match.join(',')]
+      if (cmd !== this._prevColorCmd) {
+        this.dispatchCommands([{ data: cmd }])
+        this._prevColorCmd = cmd
+      }
+    }
+  }
+
   async setHue(value: CharacteristicValue) {
+    this._hue = value as number
+    this.updateColor()
+  }
 
+  async getHue(): Promise<CharacteristicValue> {
+    return this._hue
+  }
+
+
+  async setSaturation(value: CharacteristicValue) {
+    this._saturation = value as number
+    this.updateColor()
+  }
+  
+  async getSaturation(): Promise<CharacteristicValue> {
+    return this._saturation
   }
 }

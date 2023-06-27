@@ -2,6 +2,7 @@ import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, 
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { ExamplePlatformAccessory } from './platformAccessory';
+import find from 'local-devices'
 
 type AccessoryPayload = {
   data: string
@@ -26,7 +27,32 @@ export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
   // this is used to track restored cached accessories
   public readonly accessories: PlatformAccessory[] = [];
 
-  host: string
+  _hosts: Map<string, string> = new Map()
+
+  async discoverHosts() {
+    const devices = await find()
+
+    for (const d of devices) {
+      this._hosts.set(d.ip, d.ip)
+      this._hosts.set(d.mac, d.ip)
+    }
+  }
+
+  resolveHostsToIps(hosts: string[]) {
+    const resolvedIps = new Set<string>()
+
+    for (const h of hosts) {
+      const ip = this._hosts.get(h)
+      if (ip) {
+        resolvedIps.add(ip)
+      }
+      if (h.indexOf('.') !== -1) {
+        resolvedIps.add(h)
+      }
+    }
+   
+    return resolvedIps
+  }
 
   constructor(
     public readonly log: Logger,
@@ -34,8 +60,7 @@ export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
     public readonly api: API,
   ) {
     this.log.debug('Finished initializing platform:', this.config.name);
-
-    this.host = config.host
+    this.discoverHosts()
 
     // When this event is fired it means Homebridge has restored all cached accessories from disk.
     // Dynamic Platform plugins should only register new accessories after this event was fired,
@@ -46,6 +71,8 @@ export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
       // run the method to discover / register your devices as accessories
       this.discoverDevices(config.accessories);
     });
+
+    this.resolveHostsToIps = this.resolveHostsToIps.bind(this)
   }
 
   /**
